@@ -77,7 +77,6 @@ int main()
      // aligns png/jpeg image formats with OpenGL's coordinate system. 
      // Image formats usually have the origin at the top-left corner, 
      // while OpenGL has the origin at the bottom left
-    // stbi_set_flip_vertically_on_load(true);
 
     const char* heightmapPath = "assets/heightmapper-1764410934226.png";
     int imgWidth  = 0;
@@ -127,8 +126,8 @@ int main()
     const int gridWidth  = imgWidth  / step;
     const int gridHeight = imgHeight / step;
 
-    std::vector<float> vertices;          // 3 floats per vertex: x, y, z
-    vertices.reserve(gridWidth * gridHeight * 3);
+    // 6 floats per vertex: x, y, z, nx, ny, nz (normals)
+    std::vector<float> vertices(gridWidth * gridHeight * 6, 0.0f);
 
     float heightScale = 0.3f;             // vertical exaggeration
 
@@ -144,25 +143,60 @@ int main()
             int imgX = i * step;
             int imgY = j * step;
 
-            int index = imgY * imgWidth + imgX; //convert 2D coordinate to 1D index for the image data array
-            unsigned char hByte = imageData[index]; // get pixel value (brightness)
+            int imgIndex = imgY * imgWidth + imgX; //convert 2D coordinate to 1D index for the image data array
+            unsigned char hByte = imageData[imgIndex]; // get pixel value (brightness)
             float h = static_cast<float>(hByte) / 255.0f; // normalize to 0-1 range
 
             // map grid position to 3D X, Z coordinates
             // [-1, 1] range, because OpenGL clip space is that range
             float x = (static_cast<float>(i) / (gridWidth - 1)) * 2.0f - 1.0f;
             float z = (static_cast<float>(j) / (gridHeight - 1)) * 2.0f - 1.0f;
-
             float y = h * heightScale;
 
-            vertices.push_back(x);
-            vertices.push_back(y);
-            vertices.push_back(z);
+            int vIndex = j * gridWidth + i; // vertex index in grid
+            int base = vIndex * 6;
+
+            vertices[base] = x;
+            vertices[base + 1] = y;
+            vertices[base + 2] = z;
         }
     }
 
     // We no longer need imageData once vertices are built (for this step)
     stbi_image_free(imageData);
+
+    // -----Compute Normals from heights in vertices---------
+    auto getHeight = [&](int i, int j) -> float {
+        i = std::max(0, std::min(i, gridWidth  - 1));
+        j = std::max(0, std::min(j, gridHeight - 1));
+        int vIdx = j * gridWidth + i;
+        return vertices[vIdx * 6 + 1]; // Y component
+    };
+    
+    // iterate through vertex grid positions
+    // get height of neighboring pixels to get the slopes
+    // cross product the slopes to get the normal, store in vertices list
+    for (int j = 0; j < gridHeight; ++j)
+    {
+        for (int i = 0; i < gridWidth; ++i)
+        {
+            float hL = getHeight(i - 1, j);
+            float hR = getHeight(i + 1, j);
+            float hD = getHeight(i, j - 1);
+            float hU = getHeight(i, j + 1);
+    
+            glm::vec3 dX = glm::vec3(2.0f, hR - hL, 0.0f);
+            glm::vec3 dZ = glm::vec3(0.0f, hU - hD, 2.0f);
+    
+            glm::vec3 normal = glm::normalize(glm::cross(dZ, dX));
+    
+            int vIdx = j * gridWidth + i;
+            int base = vIdx * 6;
+            vertices[base + 3] = normal.x;
+            vertices[base + 4] = normal.y;
+            vertices[base + 5] = normal.z;
+        }
+    }
 
     // Build index buffer that defines which vertices form triangles.
     // instead of storing vertex data multiple times (since triangles can share vertices), 
@@ -231,11 +265,22 @@ int main()
     glEnableVertexAttribArray(0);
     glVertexAttribPointer( // tell OpenGL how to read the data
         0,            // attribute location
-        3,              // 3 components per vertex
+        3,            
         GL_FLOAT,
         GL_FALSE,
-        3 * sizeof(float),
+        6 * sizeof(float),   // stride: 6 floats per vertex
         (void*)0
+    );
+
+    // normal attribute: layout(location = 1) in vec3 aNormal;
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer( // tell OpenGL how to read the data
+        1,            // attribute location
+        3,            
+        GL_FLOAT,
+        GL_FALSE,
+        6 * sizeof(float),   // stride: 6 floats per vertex
+        (void*)(3 * sizeof(float)) //offset: skip first 3 floats per vertex
     );
 
     glBindVertexArray(0); //unbind terrainVAO when not needed for best practice
@@ -281,6 +326,9 @@ int main()
         shader.setMat4("model", &model[0][0]);
         shader.setMat4("view", &view[0][0]);
         shader.setMat4("projection", &projection[0][0]);
+
+        // set viewPos for specular lighting
+        glUniform3fv(glGetUniformLocation(shader.ID, "viewPos"), 1, &cameraPos[0]);
 
         glBindVertexArray(terrainVAO); // bind again, so OpenGL knows which vertices and indices to use which we set earlier
         glDrawElements(GL_TRIANGLES,
