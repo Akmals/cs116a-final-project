@@ -10,10 +10,25 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
-void framebuffer_size_callback(GLFWwindow *window, int width, int height)
-{
-    glViewport(0, 0, width, height);
-}
+// --- camera settings ---
+glm::vec3 cameraPos   = glm::vec3(0.0f, 1.0f, 3.0f);
+glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
+glm::vec3 cameraUp    = glm::vec3(0.0f, 1.0f, 0.0f);
+
+float yaw   = -90.0f;   // facing -Z
+float pitch = -20.0f;   // slightly looking down
+float fov   = 45.0f;
+
+float lastX = 400.0f;   // window center (half of 800)
+float lastY = 300.0f;   // window center (half of 600)
+bool firstMouse = true;
+
+float deltaTime = 0.0f;
+float lastFrame = 0.0f;
+
+void framebuffer_size_callback(GLFWwindow* window, int width, int height);
+void mouse_callback(GLFWwindow* window, double xpos, double ypos);
+void processInput(GLFWwindow* window);
 
 int main()
 {
@@ -53,12 +68,16 @@ int main()
 
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
 
+    // capture mouse cursor for camera
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    glfwSetCursorPosCallback(window, mouse_callback);
+
     // ---------------- Heightmap loading ----------------
 
      // aligns png/jpeg image formats with OpenGL's coordinate system. 
      // Image formats usually have the origin at the top-left corner, 
      // while OpenGL has the origin at the bottom left
-    stbi_set_flip_vertically_on_load(true);
+    // stbi_set_flip_vertically_on_load(true);
 
     const char* heightmapPath = "assets/heightmapper-1764410934226.png";
     int imgWidth  = 0;
@@ -226,33 +245,43 @@ int main()
     Shader shader("shaders/vertex.glsl", "shaders/fragment.glsl");
     shader.use();
 
-    // camera bit above and back, looking at origin
-    glm::vec3 camPos = glm::vec3(0.0f, 0.8f, 2.0f);
-    glm::vec3 camTarget = glm::vec3(0.0f, 0.2f, 0.0f);
-    glm::vec3 camUp = glm::vec3(0.0f, 1.0f, 0.0f);
-
-    glm::mat4 model = glm::mat4(1.0f);
-    glm::mat4 view = glm::lookAt(camPos, camTarget, camUp);
-    glm::mat4 projection = glm::perspective(
-        glm::radians(45.0f),
-        800.0f / 600.0f,
-        0.1f, 
-        100.0f
-    );
-
-    shader.setMat4("model", &model[0][0]);
-    shader.setMat4("view", &view[0][0]);
-    shader.setMat4("projection", &projection[0][0]);
-
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
     // ---------------- Render loop ----------------
     while (!glfwWindowShouldClose(window))
     {
+        // time logic
+        float currentFrame = static_cast<float>(glfwGetTime());
+        deltaTime = currentFrame - lastFrame;
+        lastFrame = currentFrame;
+
+        processInput(window);
+
         glClearColor(0.1f, 0.2f, 0.3f, 1.0f); //background color
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         shader.use(); //sets the active shader program in OpenGL's state. glDrawElements knows to use this shader
+
+        // recompute view & projection from camera
+        glm::mat4 model = glm::mat4(1.0f);
+
+        glm::mat4 view = glm::lookAt(
+            cameraPos,
+            cameraPos + cameraFront,
+            cameraUp
+        );
+
+        glm::mat4 projection = glm::perspective(
+            glm::radians(fov),
+            800.0f / 600.0f,
+            0.1f,
+            100.0f
+        );
+
+        shader.setMat4("model", &model[0][0]);
+        shader.setMat4("view", &view[0][0]);
+        shader.setMat4("projection", &projection[0][0]);
+
         glBindVertexArray(terrainVAO); // bind again, so OpenGL knows which vertices and indices to use which we set earlier
         glDrawElements(GL_TRIANGLES,
                        static_cast<GLsizei>(indices.size()),
@@ -271,3 +300,70 @@ int main()
     glfwTerminate();
     return 0;
 }
+
+void framebuffer_size_callback(GLFWwindow *window, int width, int height)
+{
+    glViewport(0, 0, width, height);
+}
+
+void processInput(GLFWwindow* window)
+{
+    float cameraSpeed = 3.0f * deltaTime; // units per second
+
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+        cameraPos += cameraSpeed * cameraFront;
+    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+        cameraPos -= cameraSpeed * cameraFront;
+
+    // strafe: cross(front, up) gives right vector
+    glm::vec3 cameraRight = glm::normalize(glm::cross(cameraFront, cameraUp));
+
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+        cameraPos -= cameraSpeed * cameraRight;
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+        cameraPos += cameraSpeed * cameraRight;
+
+    // up / down
+    if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS)
+        cameraPos += cameraSpeed * cameraUp;
+    if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS)
+        cameraPos -= cameraSpeed * cameraUp;
+
+    // close window with Esc
+    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+        glfwSetWindowShouldClose(window, true);
+}
+
+void mouse_callback(GLFWwindow* window, double xpos, double ypos)
+{
+    if (firstMouse)
+    {
+        lastX = static_cast<float>(xpos);
+        lastY = static_cast<float>(ypos);
+        firstMouse = false;
+    }
+
+    float xoffset = static_cast<float>(xpos) - lastX;
+    float yoffset = lastY - static_cast<float>(ypos); // reversed: y goes down on screen
+    lastX = static_cast<float>(xpos);
+    lastY = static_cast<float>(ypos);
+
+    float sensitivity = 0.1f;
+    xoffset *= sensitivity;
+    yoffset *= sensitivity;
+
+    yaw   += xoffset;
+    pitch += yoffset;
+
+    // clamp pitch
+    if (pitch > 89.0f)  pitch = 89.0f;
+    if (pitch < -89.0f) pitch = -89.0f;
+
+    glm::vec3 front;
+    front.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
+    front.y = sin(glm::radians(pitch));
+    front.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
+    cameraFront = glm::normalize(front);
+}
+
+
