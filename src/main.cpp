@@ -2,6 +2,8 @@
 #include <GLFW/glfw3.h>
 #include <iostream>
 #include <vector>
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 #include "shader.h"
 
@@ -46,6 +48,8 @@ int main()
         std::cerr << "Failed to initialize GLAD\n";
         return -1;
     }
+
+    glEnable(GL_DEPTH_TEST);
 
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
 
@@ -220,17 +224,25 @@ int main()
     // ---------------- Shader & matrices ----------------
 
     Shader shader("shaders/vertex.glsl", "shaders/fragment.glsl");
-
-    float identity[16] = {
-        1, 0, 0, 0,
-        0, 1, 0, 0,
-        0, 0, 1, 0,
-        0, 0, 0, 1
-    };
     shader.use();
-    shader.setMat4("model", identity);
-    shader.setMat4("view", identity);
-    shader.setMat4("projection", identity);
+
+    // camera bit above and back, looking at origin
+    glm::vec3 camPos = glm::vec3(0.0f, 0.8f, 2.0f);
+    glm::vec3 camTarget = glm::vec3(0.0f, 0.2f, 0.0f);
+    glm::vec3 camUp = glm::vec3(0.0f, 1.0f, 0.0f);
+
+    glm::mat4 model = glm::mat4(1.0f);
+    glm::mat4 view = glm::lookAt(camPos, camTarget, camUp);
+    glm::mat4 projection = glm::perspective(
+        glm::radians(45.0f),
+        800.0f / 600.0f,
+        0.1f, 
+        100.0f
+    );
+
+    shader.setMat4("model", &model[0][0]);
+    shader.setMat4("view", &view[0][0]);
+    shader.setMat4("projection", &projection[0][0]);
 
     // draws only edges instead of filled triangles for now
     glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
