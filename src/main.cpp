@@ -244,8 +244,7 @@ int main()
     shader.setMat4("view", &view[0][0]);
     shader.setMat4("projection", &projection[0][0]);
 
-    // draws only edges instead of filled triangles for now
-    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
     // ---------------- Render loop ----------------
     while (!glfwWindowShouldClose(window))
