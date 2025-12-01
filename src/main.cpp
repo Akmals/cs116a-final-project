@@ -10,43 +10,171 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
-// --- camera settings ---
+// ============================================================================
+// GLOBAL SETTINGS
+// ============================================================================
+
+// Camera settings
 glm::vec3 cameraPos   = glm::vec3(0.0f, 1.0f, 3.0f);
 glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
 glm::vec3 cameraUp    = glm::vec3(0.0f, 1.0f, 0.0f);
-
-float yaw   = -90.0f;   // facing -Z
-float pitch = -20.0f;   // slightly looking down
+float yaw   = -90.0f;
+float pitch = -20.0f;
 float fov   = 45.0f;
 
-float lastX = 400.0f;   // window center (half of 800)
-float lastY = 300.0f;   // window center (half of 600)
+// Mouse input
+float lastX = 400.0f;
+float lastY = 300.0f;
 bool firstMouse = true;
 
+// Time
 float deltaTime = 0.0f;
 float lastFrame = 0.0f;
 
-// wireframe mode toggle
+// Display toggles
 bool wireframeMode = false;
 bool tKeyPressed = false;
 
-// cursor capture toggle
-bool cursorCaptured = true;
-bool rKeyPressed = false;
-bool mousePressed = false;
+// Cursor control - click and hold to look around
+bool cameraControlActive = false;
 
+// Terrain settings
+const int HEIGHTMAP_STEP = 8;        // Subsample factor (higher = fewer vertices)
+const float HEIGHT_SCALE = 0.3f;     // Vertical exaggeration
+
+// ============================================================================
+// FUNCTION DECLARATIONS
+// ============================================================================
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
 void mouse_button_callback(GLFWwindow* window, int button, int action, int mods);
 void processInput(GLFWwindow* window);
 
+// ============================================================================
+// TERRAIN MESH GENERATION
+// ============================================================================
+
+struct TerrainVertex
+{
+    glm::vec3 position;
+    glm::vec3 normal;
+    glm::vec2 texCoord;
+};
+
+struct TerrainMesh
+{
+    std::vector<TerrainVertex> vertices;
+    std::vector<unsigned int> indices;
+    int gridWidth;
+    int gridHeight;
+};
+
+TerrainMesh generateTerrainMesh(const unsigned char* heightmapData, 
+                                int imgWidth, int imgHeight, int step)
+{
+    TerrainMesh mesh;
+    
+    mesh.gridWidth = imgWidth / step;
+    mesh.gridHeight = imgHeight / step;
+    
+    // Reserve space for vertices
+    mesh.vertices.resize(mesh.gridWidth * mesh.gridHeight);
+    
+    // Generate vertex positions and UVs
+    for (int j = 0; j < mesh.gridHeight; ++j)
+    {
+        for (int i = 0; i < mesh.gridWidth; ++i)
+        {
+            // Sample heightmap
+            int imgX = i * step;
+            int imgY = j * step;
+            int imgIndex = imgY * imgWidth + imgX;
+            unsigned char heightByte = heightmapData[imgIndex];
+            float normalizedHeight = static_cast<float>(heightByte) / 255.0f;
+            
+            // Calculate world position
+            float x = (static_cast<float>(i) / (mesh.gridWidth - 1)) * 2.0f - 1.0f;
+            float z = (static_cast<float>(j) / (mesh.gridHeight - 1)) * 2.0f - 1.0f;
+            float y = normalizedHeight * HEIGHT_SCALE;
+            
+            // Calculate UV coordinates (0 to 1)
+            float u = static_cast<float>(i) / (mesh.gridWidth - 1);
+            float v = static_cast<float>(j) / (mesh.gridHeight - 1);
+            
+            // Store vertex data
+            int vertexIndex = j * mesh.gridWidth + i;
+            mesh.vertices[vertexIndex].position = glm::vec3(x, y, z);
+            mesh.vertices[vertexIndex].texCoord = glm::vec2(u, v);
+        }
+    }
+    
+    // Compute normals using height differences
+    for (int j = 0; j < mesh.gridHeight; ++j)
+    {
+        for (int i = 0; i < mesh.gridWidth; ++i)
+        {
+            auto getHeight = [&](int gi, int gj) -> float {
+                gi = std::max(0, std::min(gi, mesh.gridWidth - 1));
+                gj = std::max(0, std::min(gj, mesh.gridHeight - 1));
+                return mesh.vertices[gj * mesh.gridWidth + gi].position.y;
+            };
+            
+            float hLeft  = getHeight(i - 1, j);
+            float hRight = getHeight(i + 1, j);
+            float hDown  = getHeight(i, j - 1);
+            float hUp    = getHeight(i, j + 1);
+            
+            glm::vec3 tangentX = glm::vec3(2.0f, hRight - hLeft, 0.0f);
+            glm::vec3 tangentZ = glm::vec3(0.0f, hUp - hDown, 2.0f);
+            glm::vec3 normal = glm::normalize(glm::cross(tangentZ, tangentX));
+            
+            int vertexIndex = j * mesh.gridWidth + i;
+            mesh.vertices[vertexIndex].normal = normal;
+        }
+    }
+    
+    // Generate indices for triangle mesh
+    mesh.indices.reserve((mesh.gridWidth - 1) * (mesh.gridHeight - 1) * 6);
+    
+    for (int j = 0; j < mesh.gridHeight - 1; ++j)
+    {
+        for (int i = 0; i < mesh.gridWidth - 1; ++i)
+        {
+            unsigned int topLeft     = j * mesh.gridWidth + i;
+            unsigned int topRight    = j * mesh.gridWidth + (i + 1);
+            unsigned int bottomLeft  = (j + 1) * mesh.gridWidth + i;
+            unsigned int bottomRight = (j + 1) * mesh.gridWidth + (i + 1);
+            
+            // First triangle (top-left, bottom-left, top-right)
+            mesh.indices.push_back(topLeft);
+            mesh.indices.push_back(bottomLeft);
+            mesh.indices.push_back(topRight);
+            
+            // Second triangle (top-right, bottom-left, bottom-right)
+            mesh.indices.push_back(topRight);
+            mesh.indices.push_back(bottomLeft);
+            mesh.indices.push_back(bottomRight);
+        }
+    }
+    
+    return mesh;
+}
+
+// ============================================================================
+// MAIN PROGRAM
+// ============================================================================
+
 int main()
 {
+    // Initialize GLFW
     if (!glfwInit())
+    {
+        std::cerr << "Failed to initialize GLFW\n";
         return -1;
+    }
 
-    // tells GLFW what kind of OpenGL context to request when creating the window
+    // Configure OpenGL version (4.1 for macOS)
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -54,349 +182,207 @@ int main()
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
-    GLFWwindow *window = glfwCreateWindow(
-        800,                    // window width in pixels
-        600,                   // window height in pixels
-        "Terrain Renderer",            // window title (shown in title bar)
-        nullptr,         // fullscreen monitor (nullptr = windowed)
-        nullptr           // Window to share OpenGL context with (nullptr = no sharing)
-    );
-
+    // Create window
+    GLFWwindow* window = glfwCreateWindow(800, 600, "Terrain Renderer", nullptr, nullptr);
     if (!window)
     {
+        std::cerr << "Failed to create GLFW window\n";
         glfwTerminate();
         return -1;
     }
     glfwMakeContextCurrent(window);
 
+    // Initialize GLAD
     if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress))
     {
         std::cerr << "Failed to initialize GLAD\n";
         return -1;
     }
 
+    // Configure OpenGL
     glEnable(GL_DEPTH_TEST);
-
+    
+    // Set callbacks
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
-
-    // capture mouse cursor for camera
     glfwSetCursorPosCallback(window, mouse_callback);
     glfwSetMouseButtonCallback(window, mouse_button_callback);
+    
+    // Cursor starts free (normal mode)
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 
-    // ---------------- Heightmap loading ----------------
-
-     // aligns png/jpeg image formats with OpenGL's coordinate system. 
-     // Image formats usually have the origin at the top-left corner, 
-     // while OpenGL has the origin at the bottom left
-
+    // ========================================================================
+    // LOAD HEIGHTMAP
+    // ========================================================================
+    
     const char* heightmapPath = "assets/heightmapper-1764410934226.png";
-    int imgWidth  = 0;
-    int imgHeight = 0;
-    int imgChannels = 0; // a channel is one color component per pixel. ex: 1 channel: Grayscale, 3: RGB, 4: RGBA
-
-    unsigned char* imageData = stbi_load(
-        heightmapPath,
-        &imgWidth,
-        &imgHeight,
-        &imgChannels,
-        1   // force 1 channel (grayscale)
-    );
-
-    if (!imageData) {
+    int imgWidth = 0, imgHeight = 0, imgChannels = 0;
+    
+    unsigned char* imageData = stbi_load(heightmapPath, &imgWidth, &imgHeight, 
+                                         &imgChannels, 1);
+    
+    if (!imageData)
+    {
         std::cerr << "Failed to load heightmap: " << heightmapPath << "\n";
-        std::cerr << "stb_image reason: " << stbi_failure_reason() << "\n";
+        std::cerr << "Reason: " << stbi_failure_reason() << "\n";
         glfwTerminate();
         return -1;
-    } else {
-        std::cout << "Loaded heightmap: " << heightmapPath << "\n";
-        std::cout << "  Size: " << imgWidth << " x " << imgHeight << "\n";
-        std::cout << "  Channels (requested): 1 (grayscale)\n";
-
-        auto sample = [&](int x, int y) {
-            int index = y * imgWidth + x;
-            unsigned char value = imageData[index];
-            std::cout << "  pixel(" << x << "," << y << ") = "
-                      << static_cast<int>(value) << "\n";
-        };
-
-        int x0 = 0, y0 = 0;
-        int x1 = imgWidth / 2, y1 = imgHeight / 2;
-        int x2 = imgWidth - 1, y2 = imgHeight - 1;
-
-        sample(x0, y0);
-        sample(x1, y1);
-        sample(x2, y2);
     }
+    
+    std::cout << "Loaded heightmap: " << heightmapPath << "\n";
+    std::cout << "  Size: " << imgWidth << " x " << imgHeight << "\n";
+    std::cout << "  Channels: 1 (grayscale)\n";
 
-    // ---------------- Build terrain mesh from heightmap ----------------
-
-    // Subsample factor: take every Nth pixel to keep vertex count reasonable
-    const int step = 8; // smaller step = more vertices
-
-    // dimensions of vertex grid
-    const int gridWidth  = imgWidth  / step;
-    const int gridHeight = imgHeight / step;
-
-    // 6 floats per vertex: x, y, z, nx, ny, nz (normals)
-    std::vector<float> vertices(gridWidth * gridHeight * 6, 0.0f);
-
-    float heightScale = 0.3f;             // vertical exaggeration
-
-    // loop through every position in the vertex grid
-    // sample the corresponding pixel in the heightmap
-    // map grid position to 3D X, Z coordinates
-    // convert pixel brightness to height (Y coord)
-    for (int j = 0; j < gridHeight; ++j)       // j = row (y in image)
-    {
-        for (int i = 0; i < gridWidth; ++i)    // i = column (x in image)
-        {
-            // convert grid position to image coordinates
-            int imgX = i * step;
-            int imgY = j * step;
-
-            int imgIndex = imgY * imgWidth + imgX; //convert 2D coordinate to 1D index for the image data array
-            unsigned char hByte = imageData[imgIndex]; // get pixel value (brightness)
-            float h = static_cast<float>(hByte) / 255.0f; // normalize to 0-1 range
-
-            // map grid position to 3D X, Z coordinates
-            // [-1, 1] range, because OpenGL clip space is that range
-            float x = (static_cast<float>(i) / (gridWidth - 1)) * 2.0f - 1.0f;
-            float z = (static_cast<float>(j) / (gridHeight - 1)) * 2.0f - 1.0f;
-            float y = h * heightScale;
-
-            int vIndex = j * gridWidth + i; // vertex index in grid
-            int base = vIndex * 6;
-
-            vertices[base] = x;
-            vertices[base + 1] = y;
-            vertices[base + 2] = z;
-        }
-    }
-
-    // We no longer need imageData once vertices are built (for this step)
+    // ========================================================================
+    // GENERATE TERRAIN MESH
+    // ========================================================================
+    
+    TerrainMesh terrain = generateTerrainMesh(imageData, imgWidth, imgHeight, 
+                                              HEIGHTMAP_STEP);
     stbi_image_free(imageData);
-
-    // -----Compute Normals from heights in vertices---------
-    auto getHeight = [&](int i, int j) -> float {
-        i = std::max(0, std::min(i, gridWidth  - 1));
-        j = std::max(0, std::min(j, gridHeight - 1));
-        int vIdx = j * gridWidth + i;
-        return vertices[vIdx * 6 + 1]; // Y component
-    };
     
-    // iterate through vertex grid positions
-    // get height of neighboring pixels to get the slopes
-    // cross product the slopes to get the normal, store in vertices list
-    for (int j = 0; j < gridHeight; ++j)
-    {
-        for (int i = 0; i < gridWidth; ++i)
-        {
-            float hL = getHeight(i - 1, j);
-            float hR = getHeight(i + 1, j);
-            float hD = getHeight(i, j - 1);
-            float hU = getHeight(i, j + 1);
+    std::cout << "Generated terrain mesh:\n";
+    std::cout << "  Vertices: " << terrain.vertices.size() << "\n";
+    std::cout << "  Triangles: " << terrain.indices.size() / 3 << "\n";
+    std::cout << "  Grid size: " << terrain.gridWidth << " x " << terrain.gridHeight << "\n";
+
+    // ========================================================================
+    // SETUP OPENGL BUFFERS
+    // ========================================================================
     
-            glm::vec3 dX = glm::vec3(2.0f, hR - hL, 0.0f);
-            glm::vec3 dZ = glm::vec3(0.0f, hU - hD, 2.0f);
-    
-            glm::vec3 normal = glm::normalize(glm::cross(dZ, dX));
-    
-            int vIdx = j * gridWidth + i;
-            int base = vIdx * 6;
-            vertices[base + 3] = normal.x;
-            vertices[base + 4] = normal.y;
-            vertices[base + 5] = normal.z;
-        }
-    }
-
-    // Build index buffer that defines which vertices form triangles.
-    // instead of storing vertex data multiple times (since triangles can share vertices), 
-    // we store each vertex once and use indices to reference them
-    std::vector<unsigned int> indices;
-    indices.reserve((gridWidth - 1) * (gridHeight - 1) * 6); // # of grid cells * 6 indices per cell (2 triangles with 3 vertices each)
-
-    // iterate through each grid cell (NOT vertex position like the first loop)
-    // a grid cell is a square formed by 4 adjacent vertices 
-    for (int j = 0; j < gridHeight - 1; ++j)
-    {
-        for (int i = 0; i < gridWidth - 1; ++i)
-        {
-            // calculate the indices of the 4 corners of the current grid cell
-            // i0-i4 are indices in the 1D vertices array
-            unsigned int i0 = j * gridWidth + i;
-            unsigned int i1 = j * gridWidth + (i + 1);
-            unsigned int i2 = (j + 1) * gridWidth + i;
-            unsigned int i3 = (j + 1) * gridWidth + (i + 1);
-
-            // First triangle: i0, i2, i1
-            indices.push_back(i0);
-            indices.push_back(i2);
-            indices.push_back(i1);
-
-            // Second triangle: i1, i2, i3
-            indices.push_back(i1);
-            indices.push_back(i2);
-            indices.push_back(i3);
-        }
-    }
-
-    std::cout << "Terrain vertices: " << vertices.size() / 3 << "\n";
-    std::cout << "Terrain triangles: " << indices.size() / 3 << "\n";
-
-    // ---------------- OpenGL buffers for terrain mesh ----------------
-
-    // VAO - Vertex Array Object: Container that stores vertex attribute configurations and buffer bindings. The settings for how vertex data shouls be read by the GPU
-    // VBO - Vertex Buffer Object: Container that stores vertex data (ex: positions and colors)
-    // EBO - Element Buffer Object: Container that stores indices
     unsigned int terrainVAO, terrainVBO, terrainEBO;
-
-    // creates 1 of each needed array/buffer object and stores their IDs in the above vars
     glGenVertexArrays(1, &terrainVAO);
     glGenBuffers(1, &terrainVBO);
     glGenBuffers(1, &terrainEBO);
-
-    // bind terrainVAO so that the following vertex attribure configuration are stored in it
+    
     glBindVertexArray(terrainVAO);
-
-    // upload vertex data to GPU
+    
+    // Upload vertex data
     glBindBuffer(GL_ARRAY_BUFFER, terrainVBO);
-    glBufferData(GL_ARRAY_BUFFER,
-                 vertices.size() * sizeof(float),
-                 vertices.data(),
+    glBufferData(GL_ARRAY_BUFFER, 
+                 terrain.vertices.size() * sizeof(TerrainVertex),
+                 terrain.vertices.data(), 
                  GL_STATIC_DRAW);
-
-    // upload index data to GPU
+    
+    // Upload index data
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, terrainEBO);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-                 indices.size() * sizeof(unsigned int),
-                 indices.data(),
+                 terrain.indices.size() * sizeof(unsigned int),
+                 terrain.indices.data(),
                  GL_STATIC_DRAW);
-
-    // position attribute: layout(location = 0) in vec3 aPos;
+    
+    // Position attribute (location = 0)
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer( // tell OpenGL how to read the data
-        0,            // attribute location
-        3,            
-        GL_FLOAT,
-        GL_FALSE,
-        6 * sizeof(float),   // stride: 6 floats per vertex
-        (void*)0
-    );
-
-    // normal attribute: layout(location = 1) in vec3 aNormal;
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(TerrainVertex),
+                          (void*)offsetof(TerrainVertex, position));
+    
+    // Normal attribute (location = 1)
     glEnableVertexAttribArray(1);
-    glVertexAttribPointer( // tell OpenGL how to read the data
-        1,            // attribute location
-        3,            
-        GL_FLOAT,
-        GL_FALSE,
-        6 * sizeof(float),   // stride: 6 floats per vertex
-        (void*)(3 * sizeof(float)) //offset: skip first 3 floats per vertex
-    );
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(TerrainVertex),
+                          (void*)offsetof(TerrainVertex, normal));
+    
+    // UV attribute (location = 2)
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(TerrainVertex),
+                          (void*)offsetof(TerrainVertex, texCoord));
+    
+    glBindVertexArray(0);
 
-    glBindVertexArray(0); //unbind terrainVAO when not needed for best practice
-
-    // ---------------- Shader & matrices ----------------
-
+    // ========================================================================
+    // LOAD SHADERS
+    // ========================================================================
+    
     Shader shader("shaders/vertex.glsl", "shaders/fragment.glsl",
                   "shaders/tess_control.glsl", "shaders/tess_eval.glsl");
     shader.use();
-
-    // set patch size for tessellation (3 vertices = triangle)
+    
+    // Set tessellation patch size
     glPatchParameteri(GL_PATCH_VERTICES, 3);
 
-    // ---------------- Render loop ----------------
+    // ========================================================================
+    // RENDER LOOP
+    // ========================================================================
+    
     while (!glfwWindowShouldClose(window))
     {
-        // time logic
+        // Update time
         float currentFrame = static_cast<float>(glfwGetTime());
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
 
+        // Process input
         processInput(window);
 
-        // toggle wireframe mode
-        if (wireframeMode)
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-        else
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        // Toggle wireframe mode
+        glPolygonMode(GL_FRONT_AND_BACK, wireframeMode ? GL_LINE : GL_FILL);
 
-        glClearColor(0.1f, 0.2f, 0.3f, 1.0f); //background color
+        // Clear buffers
+        glClearColor(0.1f, 0.2f, 0.3f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        shader.use(); //sets the active shader program in OpenGL's state. glDrawElements knows to use this shader
+        // Activate shader
+        shader.use();
 
-        // recompute view & projection from camera
+        // Setup matrices
         glm::mat4 model = glm::mat4(1.0f);
-
-        glm::mat4 view = glm::lookAt(
-            cameraPos,
-            cameraPos + cameraFront,
-            cameraUp
-        );
-
-        glm::mat4 projection = glm::perspective(
-            glm::radians(fov),
-            800.0f / 600.0f,
-            0.1f,
-            100.0f
-        );
+        glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
+        glm::mat4 projection = glm::perspective(glm::radians(fov), 800.0f / 600.0f, 
+                                                0.1f, 100.0f);
 
         shader.setMat4("model", &model[0][0]);
-        shader.setMat4("view", &view[0][0]);
-        shader.setMat4("projection", &projection[0][0]);
-
-        // set viewPos for distance-based LOD in tessellation and specular lighting
+        shader.setMat4("view", &view[0][0]);        shader.setMat4("projection", &projection[0][0]);
         shader.setVec3("viewPos", &cameraPos[0]);
 
-        glBindVertexArray(terrainVAO); // bind again, so OpenGL knows which vertices and indices to use which we set earlier
-        glDrawElements(GL_PATCHES,
-                       static_cast<GLsizei>(indices.size()),
-                       GL_UNSIGNED_INT,
-                       (void*)0);
+        // Draw terrain
+        glBindVertexArray(terrainVAO);
+        glDrawElements(GL_PATCHES, static_cast<GLsizei>(terrain.indices.size()),
+                       GL_UNSIGNED_INT, (void*)0);
 
+        // Swap buffers and poll events
         glfwSwapBuffers(window);
-        glfwPollEvents();  // processes window events (keyboard, mouse, window close, etc.)
+        glfwPollEvents();
     }
 
-    // cleanup
+    // Cleanup
     glDeleteVertexArrays(1, &terrainVAO);
     glDeleteBuffers(1, &terrainVBO);
     glDeleteBuffers(1, &terrainEBO);
-
+    
     glfwTerminate();
     return 0;
 }
 
-void framebuffer_size_callback(GLFWwindow *window, int width, int height)
+// ============================================================================
+// CALLBACK FUNCTIONS
+// ============================================================================
+
+void framebuffer_size_callback(GLFWwindow* window, int width, int height)
 {
     glViewport(0, 0, width, height);
 }
 
 void processInput(GLFWwindow* window)
 {
-    float cameraSpeed = 3.0f * deltaTime; // units per second
+    float cameraSpeed = 3.0f * deltaTime;
 
+    // Camera movement (WASD)
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
         cameraPos += cameraSpeed * cameraFront;
     if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
         cameraPos -= cameraSpeed * cameraFront;
 
-    // strafe: cross(front, up) gives right vector
     glm::vec3 cameraRight = glm::normalize(glm::cross(cameraFront, cameraUp));
-
     if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
         cameraPos -= cameraSpeed * cameraRight;
     if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
         cameraPos += cameraSpeed * cameraRight;
 
-    // up / down
+    // Camera up/down (Space/Ctrl)
     if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS)
         cameraPos += cameraSpeed * cameraUp;
     if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS)
         cameraPos -= cameraSpeed * cameraUp;
 
-    // toggle wireframe mode with T key
+    // Toggle wireframe mode (T key)
     if (glfwGetKey(window, GLFW_KEY_T) == GLFW_PRESS)
     {
         if (!tKeyPressed)
@@ -411,40 +397,17 @@ void processInput(GLFWwindow* window)
         tKeyPressed = false;
     }
 
-    // toggle cursor capture with R key
-    if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS)
-    {
-        if (!rKeyPressed)
-        {
-            cursorCaptured = !cursorCaptured;
-            if (cursorCaptured)
-            {
-                glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-                std::cout << "Cursor captured (camera control ON)\n";
-            }
-            else
-            {
-                glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-                std::cout << "Cursor released (camera control OFF)\n";
-            }
-            rKeyPressed = true;
-        }
-    }
-    else
-    {
-        rKeyPressed = false;
-    }
-
-    // close window with Esc
+    // Exit (Escape key)
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
 }
 
 void mouse_callback(GLFWwindow* window, double xpos, double ypos)
 {
-    if (!mousePressed)
+    // Only process mouse movement when camera control is active (mouse held down)
+    if (!cameraControlActive)
     {
-        firstMouse = true;  // Reset when not pressing
+        firstMouse = true;
         return;
     }
 
@@ -460,29 +423,42 @@ void mouse_callback(GLFWwindow* window, double xpos, double ypos)
     lastX = static_cast<float>(xpos);
     lastY = static_cast<float>(ypos);
 
-    float sensitivity = 0.1f;
+    const float sensitivity = 0.1f;
     xoffset *= sensitivity;
     yoffset *= sensitivity;
 
-    yaw   += xoffset;
+    yaw += xoffset;
     pitch += yoffset;
 
+    // Clamp pitch
     if (pitch > 89.0f)  pitch = 89.0f;
     if (pitch < -89.0f) pitch = -89.0f;
 
+    // Calculate new camera front vector
     glm::vec3 front;
     front.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
     front.y = sin(glm::radians(pitch));
     front.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
     cameraFront = glm::normalize(front);
 }
+
 void mouse_button_callback(GLFWwindow* window, int button, int action, int mods)
 {
+    // Left mouse button controls camera
     if (button == GLFW_MOUSE_BUTTON_LEFT)
     {
         if (action == GLFW_PRESS)
-            mousePressed = true;
+        {
+            // Start camera control
+            cameraControlActive = true;
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        }
         else if (action == GLFW_RELEASE)
-            mousePressed = false;
+        {
+            // Stop camera control
+            cameraControlActive = false;
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+            firstMouse = true; // Reset for next time
+        }
     }
 }
