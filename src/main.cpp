@@ -33,9 +33,12 @@ bool tKeyPressed = false;
 // cursor capture toggle
 bool cursorCaptured = true;
 bool rKeyPressed = false;
+bool mousePressed = false;
+
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
+void mouse_button_callback(GLFWwindow* window, int button, int action, int mods);
 void processInput(GLFWwindow* window);
 
 int main()
@@ -77,8 +80,8 @@ int main()
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
 
     // capture mouse cursor for camera
-    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
     glfwSetCursorPosCallback(window, mouse_callback);
+    glfwSetMouseButtonCallback(window, mouse_button_callback);
 
     // ---------------- Heightmap loading ----------------
 
@@ -439,10 +442,9 @@ void processInput(GLFWwindow* window)
 
 void mouse_callback(GLFWwindow* window, double xpos, double ypos)
 {
-    // only process mouse movement if cursor is captured
-    if (!cursorCaptured)
+    if (!mousePressed)
     {
-        firstMouse = true; // reset for when we re-capture
+        firstMouse = true;  // Reset when not pressing
         return;
     }
 
@@ -454,7 +456,7 @@ void mouse_callback(GLFWwindow* window, double xpos, double ypos)
     }
 
     float xoffset = static_cast<float>(xpos) - lastX;
-    float yoffset = lastY - static_cast<float>(ypos); // reversed: y goes down on screen
+    float yoffset = lastY - static_cast<float>(ypos);
     lastX = static_cast<float>(xpos);
     lastY = static_cast<float>(ypos);
 
@@ -465,7 +467,6 @@ void mouse_callback(GLFWwindow* window, double xpos, double ypos)
     yaw   += xoffset;
     pitch += yoffset;
 
-    // clamp pitch
     if (pitch > 89.0f)  pitch = 89.0f;
     if (pitch < -89.0f) pitch = -89.0f;
 
@@ -474,4 +475,14 @@ void mouse_callback(GLFWwindow* window, double xpos, double ypos)
     front.y = sin(glm::radians(pitch));
     front.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
     cameraFront = glm::normalize(front);
+}
+void mouse_button_callback(GLFWwindow* window, int button, int action, int mods)
+{
+    if (button == GLFW_MOUSE_BUTTON_LEFT)
+    {
+        if (action == GLFW_PRESS)
+            mousePressed = true;
+        else if (action == GLFW_RELEASE)
+            mousePressed = false;
+    }
 }
