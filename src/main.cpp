@@ -264,7 +264,7 @@ float getTerrainHeightAt(float worldX, float worldZ)
 // MAIN PROGRAM
 // ============================================================================
 
-int main()
+int main(int argc, char* argv[])
 {
     // Initialize GLFW
     if (!glfwInit())
@@ -313,7 +313,15 @@ int main()
     // LOAD HEIGHTMAP
     // ========================================================================
     
-    const char* heightmapPath = "assets/heightmapper-1764410934226.png";
+    const char* heightmapPath = "assets/mtfuji.png";
+    if (argc >= 2)
+    {
+        heightmapPath = argv[1];  // Use command-line argument
+    }
+    else
+    {
+        heightmapPath = "assets/heightmapper-1764410934226.png";  // Default fallback
+    }
     int imgWidth = 0, imgHeight = 0, imgChannels = 0;
     
     unsigned char* imageData = stbi_load(heightmapPath, &imgWidth, &imgHeight, 
